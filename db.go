@@ -20,6 +20,25 @@ type User struct {
 	LockedUntil    sql.NullTime
 }
 
+type ChatUsage struct {
+	ID        int       `json:"id"`
+	UserID    int       `json:"user_id"`
+	Model     string    `json:"model"`
+	PromptTokens    int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens     int `json:"total_tokens"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type TokenStats struct {
+	TotalConversations int `json:"total_conversations"`
+	TotalPromptTokens  int `json:"total_prompt_tokens"`
+	TotalCompletionTokens int `json:"total_completion_tokens"`
+	TotalTokens        int `json:"total_tokens"`
+	TodayConversations int `json:"today_conversations"`
+	TodayTokens        int `json:"today_tokens"`
+}
+
 func initDB() {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
@@ -40,7 +59,86 @@ func initDB() {
 		log.Fatalf("Failed to ping database: %v", err)
 	}
 
+	if err = createTables(); err != nil {
+		log.Fatalf("Failed to create tables: %v", err)
+	}
+
 	log.Println("Database connected")
+}
+
+func createTables() error {
+	query := `
+	CREATE TABLE IF NOT EXISTS chat_usage (
+		id SERIAL PRIMARY KEY,
+		user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		model VARCHAR(100),
+		prompt_tokens INTEGER DEFAULT 0,
+		completion_tokens INTEGER DEFAULT 0,
+		total_tokens INTEGER DEFAULT 0,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_chat_usage_user_id ON chat_usage(user_id);
+	CREATE INDEX IF NOT EXISTS idx_chat_usage_created_at ON chat_usage(created_at);
+	`
+	_, err := db.Exec(query)
+	return err
+}
+
+func saveChatUsage(userID int, model string, promptTokens, completionTokens, totalTokens int) error {
+	_, err := db.Exec(
+		`INSERT INTO chat_usage (user_id, model, prompt_tokens, completion_tokens, total_tokens)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		userID, model, promptTokens, completionTokens, totalTokens,
+	)
+	return err
+}
+
+func getUserTokenStats(userID int) (*TokenStats, error) {
+	stats := &TokenStats{}
+
+	// 总体统计
+	err := db.QueryRow(
+		`SELECT COUNT(*), COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(total_tokens), 0)
+		 FROM chat_usage WHERE user_id = $1`,
+		userID,
+	).Scan(&stats.TotalConversations, &stats.TotalPromptTokens, &stats.TotalCompletionTokens, &stats.TotalTokens)
+	if err != nil {
+		return nil, err
+	}
+
+	// 今日统计
+	err = db.QueryRow(
+		`SELECT COUNT(*), COALESCE(SUM(total_tokens), 0)
+		 FROM chat_usage WHERE user_id = $1 AND DATE(created_at) = CURRENT_DATE`,
+		userID,
+	).Scan(&stats.TodayConversations, &stats.TodayTokens)
+	if err != nil {
+		return nil, err
+	}
+
+	return stats, nil
+}
+
+func getRecentUsage(userID int, limit int) ([]ChatUsage, error) {
+	rows, err := db.Query(
+		`SELECT id, user_id, model, prompt_tokens, completion_tokens, total_tokens, created_at
+		 FROM chat_usage WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2`,
+		userID, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var usages []ChatUsage
+	for rows.Next() {
+		var u ChatUsage
+		if err := rows.Scan(&u.ID, &u.UserID, &u.Model, &u.PromptTokens, &u.CompletionTokens, &u.TotalTokens, &u.CreatedAt); err != nil {
+			return nil, err
+		}
+		usages = append(usages, u)
+	}
+	return usages, rows.Err()
 }
 
 func getUserByUsername(username string) (*User, error) {
