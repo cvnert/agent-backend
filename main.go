@@ -48,8 +48,22 @@ func handleModels(c *gin.Context) {
 	c.Data(resp.StatusCode, "application/json", body)
 }
 
-func handleChat(c *gin.Context) {
+func getUserID(c *gin.Context) int {
 	userID, _ := c.Get("user_id")
+	switch v := userID.(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	case int64:
+		return int(v)
+	default:
+		return 0
+	}
+}
+
+func handleChat(c *gin.Context) {
+	userID := getUserID(c)
 
 	// 读取请求体以获取 model 信息
 	bodyBytes, _ := io.ReadAll(c.Request.Body)
@@ -89,7 +103,7 @@ func handleChat(c *gin.Context) {
 	})
 
 	// 异步保存 token 使用情况（如果需要的话）
-	go saveUsageFromResponse(userID.(int), reqBody.Model, responseData)
+	go saveUsageFromResponse(userID, reqBody.Model, responseData)
 }
 
 func saveUsageFromResponse(userID int, model string, data []byte) {
@@ -113,8 +127,8 @@ func saveUsageFromResponse(userID int, model string, data []byte) {
 }
 
 func handleGetTokenStats(c *gin.Context) {
-	userID, _ := c.Get("user_id")
-	stats, err := getUserTokenStats(userID.(int))
+	userID := getUserID(c)
+	stats, err := getUserTokenStats(userID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -123,9 +137,9 @@ func handleGetTokenStats(c *gin.Context) {
 }
 
 func handleGetRecentUsage(c *gin.Context) {
-	userID, _ := c.Get("user_id")
+	userID := getUserID(c)
 	limit := 10
-	usages, err := getRecentUsage(userID.(int), limit)
+	usages, err := getRecentUsage(userID, limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
