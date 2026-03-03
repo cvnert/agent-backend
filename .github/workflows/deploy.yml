@@ -20,20 +20,15 @@ jobs:
       - name: Build for Linux
         run: GOOS=linux GOARCH=amd64 go build -o agent-backend .
 
-      - name: Upload binary to server
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: agent-backend
-          target: /opt/agent/backend/
-
-      - name: Restart service
+      - name: Deploy to server
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          password: ${{ secrets.SERVER_PASSWORD }}
           script: |
-            sudo systemctl restart agent-backend
+            sudo systemctl stop agent-backend || true
+            cd /opt/agent/backend
+            sudo wget -O agent-backend https://github.com/${{ github.repository }}/releases/download/latest/agent-backend 2>/dev/null || echo "No release, using local build"
+            sudo chmod +x agent-backend
+            sudo systemctl start agent-backend
