@@ -18,6 +18,15 @@ type User struct {
 	CreatedAt      time.Time
 	FailedAttempts int
 	LockedUntil    sql.NullTime
+	TokenBalance   int `json:"token_balance"`
+}
+
+type PurchaseRecord struct {
+	ID          int       `json:"id"`
+	UserID      int       `json:"user_id"`
+	Amount      int       `json:"amount"`      // 购买的 token 数量
+	Price       float64   `json:"price"`       // 价格（演示用，实际没收钱）
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type ChatUsage struct {
@@ -68,6 +77,20 @@ func initDB() {
 
 func createTables() error {
 	query := `
+	-- 用户 token 余额字段
+	ALTER TABLE users ADD COLUMN IF NOT EXISTS token_balance INTEGER DEFAULT 10000;
+
+	-- 购买记录表
+	CREATE TABLE IF NOT EXISTS purchase_records (
+		id SERIAL PRIMARY KEY,
+		user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		amount INTEGER NOT NULL,
+		price DECIMAL(10,2) DEFAULT 0,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_purchase_user_id ON purchase_records(user_id);
+
+	-- 对话使用记录表
 	CREATE TABLE IF NOT EXISTS chat_usage (
 		id SERIAL PRIMARY KEY,
 		user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -141,12 +164,65 @@ func getRecentUsage(userID int, limit int) ([]ChatUsage, error) {
 	return usages, rows.Err()
 }
 
+// Token 余额相关函数
+func getUserTokenBalance(userID int) (int, error) {
+	var balance int
+	err := db.QueryRow(`SELECT COALESCE(token_balance, 0) FROM users WHERE id = $1`, userID).Scan(&balance)
+	return balance, err
+}
+
+func deductTokens(userID int, amount int) error {
+	_, err := db.Exec(
+		`UPDATE users SET token_balance = token_balance - $1 WHERE id = $2 AND token_balance >= $1`,
+		amount, userID,
+	)
+	return err
+}
+
+func addTokens(userID int, amount int) error {
+	_, err := db.Exec(
+		`UPDATE users SET token_balance = token_balance + $1 WHERE id = $2`,
+		amount, userID,
+	)
+	return err
+}
+
+func createPurchaseRecord(userID int, amount int, price float64) error {
+	_, err := db.Exec(
+		`INSERT INTO purchase_records (user_id, amount, price) VALUES ($1, $2, $3)`,
+		userID, amount, price,
+	)
+	return err
+}
+
+func getPurchaseHistory(userID int, limit int) ([]PurchaseRecord, error) {
+	rows, err := db.Query(
+		`SELECT id, user_id, amount, price, created_at FROM purchase_records
+		 WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2`,
+		userID, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var records []PurchaseRecord
+	for rows.Next() {
+		var r PurchaseRecord
+		if err := rows.Scan(&r.ID, &r.UserID, &r.Amount, &r.Price, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		records = append(records, r)
+	}
+	return records, rows.Err()
+}
+
 func getUserByUsername(username string) (*User, error) {
 	u := &User{}
 	err := db.QueryRow(
-		`SELECT id, username, password_hash, created_at, failed_attempts, locked_until
+		`SELECT id, username, password_hash, created_at, failed_attempts, locked_until, COALESCE(token_balance, 0)
 		 FROM users WHERE username = $1`, username,
-	).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.CreatedAt, &u.FailedAttempts, &u.LockedUntil)
+	).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.CreatedAt, &u.FailedAttempts, &u.LockedUntil, &u.TokenBalance)
 	if err != nil {
 		return nil, err
 	}
